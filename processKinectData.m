@@ -22,6 +22,10 @@ function [normals,center,centroids,meanDistanceToGreen,finalPtCloud] = processKi
 fig = length(findobj('type','figure')) + 1;
 if nargin < 2, bPlot = true; end
 
+%% Define global data for optimization
+% (position data)
+global planesPtCloud
+
 %% Load data
 data = load(txtname);
 % Convert to uint8 for colors
@@ -84,7 +88,7 @@ end
 totalCloud = pointCloud(xyz,'Color',uint8(cols));
 if bPlot
     figure(fig)
-    subplot(3,3,3), pcshow(totalCloud)
+    subplot(2,3,3), pcshow(totalCloud)
     title 'Point cloud of relevant points'
 end
 
@@ -98,6 +102,7 @@ maxDistance = .001;
 
 finalData = [];
 finalColors = [];
+% Iterate through planes
 for idx = 1:3
     where = lbls == idx;
     % Define color purely:
@@ -105,19 +110,18 @@ for idx = 1:3
     color(idx) = 255;
     ptCloud{idx} = pointCloud(xyz(where,:),...
                     'Color',uint8(repmat(color,nnz(where),1)));
+    % Perform RANSAC (M-SAC, actually)
     [planes{idx},inlierIdxs,~] = pcfitplane(ptCloud{idx},maxDistance);
     planesPtCloud{idx} = select(ptCloud{idx},inlierIdxs);
     finalData = [finalData; planesPtCloud{idx}.Location];
     finalColors = [finalColors; planesPtCloud{idx}.Color];
 end
 
-finalPtCloud = pointCloud(finalData,'Color',uint8(finalColors));
-
 %% Plot the planes
 if bPlot
     figure(fig)
     for idx = 1:3
-        subplot(2,3,6+idx), pcshow(planesPtCloud{idx})
+        subplot(2,3,3+idx), pcshow(planesPtCloud{idx})
         title(sprintf('Plane number %g',idx))
     end
 end
@@ -138,9 +142,11 @@ end
 centers = zeros(3);
 normals = zeros(3);
 for idx = 1:3
-    centers(idx,:) = mean(ptCloud{idx}.Location);
+    centers(idx,:) = mean(planesPtCloud{idx}.Location);
     normal = planes{idx}.Normal;
     if normal(2) > 0, normal = -normal; end
+    % Each row vector of the matrix is a normal vector
+    % sum(normals.^2,2) should be a vector of ones
     normals(idx,:) = normal;
 end
 
@@ -148,10 +154,49 @@ if bPlot
     figure(fig)
     subplot(2,3,3)
     hold on, quiver3(centers(:,1),centers(:,2),centers(:,3),...
-        normals(:,1),normals(:,2),normals(:,3))
+                     normals(:,1),normals(:,2),normals(:,3))
 end
 
+%% Perform optimization to find new normals
+% Initial points:
+xx0 = reshape(normals',1,9);
+
+xx = fmincon(@fcn_objective,xx0,[],[],[],[],[],[],@fcn_constraint);
+normals = reshape(xx',3,3)';
+
+% if bPlot
+%     figure(fig)
+%     subplot(2,3,3)
+%     hold on, quiver3(centers(:,1),centers(:,2),centers(:,3),...
+%                      normals(:,1),normals(:,2),normals(:,3),'b')
+% end
+
+% Check for direction
+% for idx = 1:3
+%     normal = normals(idx,:);
+%     if normal(2) > 0, normal = -normal; end
+%     normals(idx,:) = normal;
+% end
+disp('Old corner:')
+disp(ptCorner)
+ptCorner = -normals\ones(3,1);
+disp('New corner:')
+disp(ptCorner)
+
+if bPlot
+    figure(fig)
+    subplot(2,3,3)
+    hold on, quiver3(centers(:,1),centers(:,2),centers(:,3),...
+        normals(:,1),normals(:,2),normals(:,3),'k')
+    hold on, scatter3(ptCorner(1),ptCorner(2),ptCorner(3),200)
+end
+
+finalPtCloud = pointCloud(finalData,'Color',uint8(finalColors));
+
+
 %% Get the center of the box
+% Normalize normal vectors
+normals = bsxfun(@rdivide,normals',sqrt(sum(normals'.^2,1)))';
 boxSize = .2;% 20 cm!
 center = ptCorner' - boxSize/2*(normals(1,:) + normals(2,:) + normals(3,:));
 if bPlot
